@@ -1,0 +1,25 @@
+{
+	"name": "tikzjax-obsidian",
+	"version": "0.1.0",
+	"description": "Render TikZ diagrams in Obsidian with local caching support",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "node esbuild.config.mjs production"
+	},
+	"author": "Saga",
+	"license": "GPL-3.0+",
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"builtin-modules": "^4.0.0",
+		"esbuild": "^0.24.0",
+		"obsidian": "latest",
+		"typescript": "^5.6.0"
+	},
+	"dependencies": {
+		"@drgrice1/dvi2html": "^0.0.7-beta4",
+		"buffer": "^6.0.3",
+		"pako": "^2.1.0",
+		"stream-browserify": "^3.0.0"
+	}
+}

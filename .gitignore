@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# local temp
+.smoke_test_meta
+
+# dependencies
+node_modules/
+
+# build artifacts
+dist/
+release/
+main.js
+tex-worker.js
