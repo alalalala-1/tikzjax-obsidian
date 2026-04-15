@@ -1,4 +1,4 @@
-import { App, normalizePath, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { App, normalizePath } from 'obsidian';
 import type { TikzJaxSettings } from './types';
 
 export class CacheManager {
@@ -14,12 +14,24 @@ export class CacheManager {
 		return normalizePath(`${this.settings.cacheFolder}/${hash}.svg`);
 	}
 
-	private getCacheFolderChildren(): TAbstractFile[] {
-		const cacheDir = this.app.vault.getAbstractFileByPath(this.settings.cacheFolder);
-		if (!(cacheDir instanceof TFolder)) {
+	private async listCacheFiles(): Promise<string[]> {
+		const root = normalizePath(this.settings.cacheFolder);
+		const exists = await this.app.vault.adapter.exists(root);
+		if (!exists) {
 			return [];
 		}
-		return cacheDir.children ?? [];
+
+		const files: string[] = [];
+		const pendingFolders: string[] = [root];
+
+		while (pendingFolders.length > 0) {
+			const folder = pendingFolders.pop()!;
+			const listed = await this.app.vault.adapter.list(folder);
+			files.push(...listed.files.map((path) => normalizePath(path)));
+			pendingFolders.push(...listed.folders.map((path) => normalizePath(path)));
+		}
+
+		return files;
 	}
 
 	async get(hash: string): Promise<string | null> {
@@ -33,16 +45,16 @@ export class CacheManager {
 
 		try {
 			const path = this.getCachePath(hash);
-			const file = this.app.vault.getAbstractFileByPath(path);
-			if (file instanceof TFile) {
-				const content = await this.app.vault.read(file);
-				if (!content.includes('<svg')) {
-					await this.app.vault.delete(file);
-					return null;
-				}
-				this.memoryCache.set(hash, content);
-				return content;
+			const exists = await this.app.vault.adapter.exists(path);
+			if (!exists) return null;
+
+			const content = await this.app.vault.adapter.read(path);
+			if (!content.includes('<svg')) {
+				await this.app.vault.adapter.remove(path);
+				return null;
 			}
+			this.memoryCache.set(hash, content);
+			return content;
 		} catch (error) {
 			console.error('Cache read error:', error);
 		}
@@ -75,11 +87,10 @@ export class CacheManager {
 		this.memoryCache.clear();
 
 		try {
-			for (const file of this.getCacheFolderChildren()) {
-				if (file instanceof TFile && file.extension === 'svg') {
-					await this.app.vault.delete(file);
-					count++;
-				}
+			for (const filePath of await this.listCacheFiles()) {
+				if (!filePath.toLowerCase().endsWith('.svg')) continue;
+				await this.app.vault.adapter.remove(filePath);
+				count++;
 			}
 		} catch (error) {
 			console.error('Cache clear error:', error);
@@ -90,16 +101,15 @@ export class CacheManager {
 	async cleanInvalidEntries(): Promise<number> {
 		let removed = 0;
 		try {
-			for (const file of this.getCacheFolderChildren()) {
-				if (!(file instanceof TFile)) continue;
-				if (file.extension !== 'svg') {
-					await this.app.vault.delete(file);
+			for (const filePath of await this.listCacheFiles()) {
+				if (!filePath.toLowerCase().endsWith('.svg')) {
+					await this.app.vault.adapter.remove(filePath);
 					removed++;
 					continue;
 				}
-				const content = await this.app.vault.read(file);
+				const content = await this.app.vault.adapter.read(filePath);
 				if (!content.includes('<svg')) {
-					await this.app.vault.delete(file);
+					await this.app.vault.adapter.remove(filePath);
 					removed++;
 				}
 			}
@@ -112,11 +122,12 @@ export class CacheManager {
 	async getCacheStats(): Promise<{ count: number; size: number }> {
 		let count = 0, size = 0;
 		try {
-			for (const file of this.getCacheFolderChildren()) {
-				if (file instanceof TFile && file.extension === 'svg') {
-					count++;
-					size += file.stat.size;
-				}
+			for (const filePath of await this.listCacheFiles()) {
+				if (!filePath.toLowerCase().endsWith('.svg')) continue;
+				const stat = await this.app.vault.adapter.stat(filePath);
+				if (!stat) continue;
+				count++;
+				size += stat.size;
 			}
 		} catch (error) {
 			console.error('Cache stats error:', error);

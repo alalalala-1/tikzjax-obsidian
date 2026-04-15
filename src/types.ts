@@ -7,6 +7,7 @@ export interface TikzJaxSettings {
 	cacheStatusLabelColor: string;
 	renderTimeoutMs: number;
 	showTexConsole: boolean;
+	scaleByHash: Record<string, number>;
 }
 
 export const DEFAULT_SETTINGS: TikzJaxSettings = {
@@ -18,6 +19,7 @@ export const DEFAULT_SETTINGS: TikzJaxSettings = {
 	cacheStatusLabelColor: '#c62828',
 	renderTimeoutMs: 90000,
 	showTexConsole: false,
+	scaleByHash: {},
 };
 
 export interface TikzCodeBlockInfo {

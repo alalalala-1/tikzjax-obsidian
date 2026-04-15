@@ -9,6 +9,7 @@ export class TikzJaxSettingTab extends PluginSettingTab {
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+		let timeoutInputDebounce: number | null = null;
 
 		containerEl.createEl('h2', { text: 'TikzJaxObsidian Settings' });
 
@@ -66,8 +67,20 @@ export class TikzJaxSettingTab extends PluginSettingTab {
 					.setPlaceholder('90000')
 					.setValue(String(this.plugin.settings.renderTimeoutMs))
 					.onChange(async (value) => {
-						const next = Math.max(10000, Math.min(300000, Number(value) || 90000));
-						await this.plugin.updateSettings({ renderTimeoutMs: next });
+						if (timeoutInputDebounce) {
+							window.clearTimeout(timeoutInputDebounce);
+						}
+
+						timeoutInputDebounce = window.setTimeout(async () => {
+							const trimmed = value.trim();
+							if (!trimmed) return;
+
+							const parsed = Number(trimmed);
+							if (!Number.isFinite(parsed)) return;
+
+							const next = Math.max(1000, Math.min(600000, Math.round(parsed)));
+							await this.plugin.updateSettings({ renderTimeoutMs: next });
+						}, 280);
 					});
 			});
 

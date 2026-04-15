@@ -1,4 +1,4 @@
-const PLUGIN_VERSION = '0.1.0';
+const PLUGIN_VERSION = '0.5';
 
 export async function createHash(input: string): Promise<string> {
 	const encoder = new TextEncoder();

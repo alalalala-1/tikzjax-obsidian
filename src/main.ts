@@ -1,16 +1,35 @@
-import { Plugin, MarkdownPostProcessorContext, MarkdownView, EditorPosition, Notice, normalizePath, TFile, Modal } from 'obsidian';
+import { Plugin, MarkdownPostProcessorContext, MarkdownView, EditorPosition, Notice, normalizePath, TFile, Modal, Platform } from 'obsidian';
 import { TikzJaxSettings, DEFAULT_SETTINGS, TikzCodeBlockInfo, TikzRenderInput } from './types';
 import { CacheManager } from './cache-manager';
 import { createHash, createCacheKey } from './utils/hash';
 import { parseTikzBlock } from './utils/parse';
-import { TikzWorkerRenderer } from './tikz-renderer';
+import { TikzWorkerRenderer, type RenderTelemetryEvent } from './tikz-renderer';
 import { TikzJaxSettingTab } from './settings';
+
+interface RenderPerfStats {
+	cacheHits: number;
+	cacheMisses: number;
+	workerRenders: number;
+	workerFailures: number;
+	workerTimeouts: number;
+	queueWaitTotalMs: number;
+	workerDurationTotalMs: number;
+	maxQueueWaitMs: number;
+	maxWorkerDurationMs: number;
+	maxQueuedAhead: number;
+	lastErrors: string[];
+}
 
 export default class TikzJaxPlugin extends Plugin {
 	settings: TikzJaxSettings = DEFAULT_SETTINGS;
 	cacheManager!: CacheManager;
 	renderer!: TikzWorkerRenderer;
 	private fontsStylesheetEl: HTMLStyleElement | null = null;
+	private static readonly MAX_QUEUE_WAIT_FOR_SLOT_MS = 2500;
+	private static readonly QUEUE_WAIT_SLICE_MS = 60;
+	private static readonly NORMAL_RENDER_QUEUE_LIMIT = 3;
+	private static readonly FORCED_RENDER_QUEUE_LIMIT = 6;
+	private renderPerfStats: RenderPerfStats = this.createEmptyPerfStats();
 	private static readonly REQUIRED_LOCAL_FONTS = [
 		'cmr10.woff2',
 		'cmmi10.woff2',
@@ -40,7 +59,7 @@ export default class TikzJaxPlugin extends Plugin {
 			}
 		}
 
-		this.renderer = new TikzWorkerRenderer(this, () => this.settings);
+		this.renderer = new TikzWorkerRenderer(this, () => this.settings, (event) => this.recordRendererTelemetry(event));
 		try {
 			await this.renderer.initialize();
 		} catch (error) {
@@ -49,6 +68,7 @@ export default class TikzJaxPlugin extends Plugin {
 		}
 
 		this.registerTikzProcessors();
+		this.registerPerformanceCommands();
 
 		this.addSettingTab(new TikzJaxSettingTab(this.app, this));
 
@@ -128,19 +148,161 @@ export default class TikzJaxPlugin extends Plugin {
 		const statusLabel = frame.createDiv({ cls: 'tikzjax-status-label' });
 		const content = frame.createDiv({ cls: 'tikzjax-content' });
 		const toolbar = frame.createDiv({ cls: 'tikzjax-toolbar' });
+		const isMobileRuntime = Platform.isMobile;
+		const minScale = 0.5;
+		const maxScale = 2.5;
 
-		let scale = 1;
-		let renderNow: (forceRebuild?: boolean) => Promise<void>;
+		const clampScale = (value: number) => {
+			if (!Number.isFinite(value)) return 1;
+			return Math.min(maxScale, Math.max(minScale, value));
+		};
+
+		const normalizeScale = (value: number) => Math.round(clampScale(value) * 100) / 100;
+
+		if (isMobileRuntime) {
+			timeLabel.style.fontSize = '11px';
+			timeLabel.style.padding = '3px 8px';
+			statusLabel.style.fontSize = '11px';
+			statusLabel.style.padding = '3px 8px';
+		}
+
+		let scale = normalizeScale(this.settings.scaleByHash[info.hash] ?? 1);
+		let renderNow: (forceRebuild?: boolean, options?: { keepToolbarVisible?: boolean }) => Promise<void>;
+		let isRendering = false;
+		let suppressHideUntil = 0;
+
+		const persistScale = () => {
+			scale = normalizeScale(scale);
+			const currentScaleByHash = this.settings.scaleByHash ?? {};
+			const currentValue = currentScaleByHash[info.hash];
+
+			if (scale === 1 && currentValue === undefined) {
+				return;
+			}
+			if (currentValue !== undefined && Math.abs(currentValue - scale) < 0.0001) {
+				return;
+			}
+
+			const nextScaleByHash = { ...currentScaleByHash };
+			if (scale === 1) {
+				delete nextScaleByHash[info.hash];
+			} else {
+				nextScaleByHash[info.hash] = scale;
+			}
+
+			void this.updateSettings({ scaleByHash: nextScaleByHash });
+		};
+
+		const keepToolbarVisible = (suppressMs = 0) => {
+			toolbar.addClass('is-visible');
+			if (suppressMs > 0) {
+				suppressHideUntil = Math.max(suppressHideUntil, Date.now() + suppressMs);
+			}
+		};
+
+		const reserveLoadingSpace = () => {
+			const existingSvg = content.querySelector('svg') as SVGElement | null;
+			const rect = existingSvg?.getBoundingClientRect() ?? content.getBoundingClientRect();
+			let width = Math.max(0, Math.ceil(rect.width));
+			let height = Math.max(0, Math.ceil(rect.height));
+
+			if (!existingSvg) {
+				const containerWidth = Math.max(0, Math.ceil(container.getBoundingClientRect().width));
+				const fallbackWidth = Math.max(360, Math.min(760, Math.round(containerWidth * 0.72)));
+				const fallbackHeight = Math.max(220, Math.round(fallbackWidth * 0.62));
+				width = Math.max(width, fallbackWidth);
+				height = Math.max(height, fallbackHeight);
+			}
+
+			if (width > 0) {
+				content.style.minWidth = `${Math.max(320, width)}px`;
+			}
+			if (height > 0) {
+				content.style.minHeight = `${Math.max(210, height)}px`;
+			}
+		};
+
+		const clearLoadingSpace = () => {
+			content.style.removeProperty('min-width');
+			content.style.removeProperty('min-height');
+		};
 
 		const applyScale = () => {
 			const svg = content.querySelector('svg') as SVGElement | null;
 			if (!svg) return;
-			svg.style.transformOrigin = 'top center';
-			svg.style.transform = `scale(${scale})`;
+
+			let baseWidth = Number(svg.dataset.tikzBaseWidth || 0);
+			let baseHeight = Number(svg.dataset.tikzBaseHeight || 0);
+
+			if (!(baseWidth > 0 && baseHeight > 0)) {
+				const vb = svg.viewBox?.baseVal;
+				if (vb && vb.width > 0 && vb.height > 0) {
+					baseWidth = vb.width;
+					baseHeight = vb.height;
+				} else {
+					const parsedW = Number.parseFloat(svg.getAttribute('width') || '');
+					const parsedH = Number.parseFloat(svg.getAttribute('height') || '');
+					if (Number.isFinite(parsedW) && parsedW > 0 && Number.isFinite(parsedH) && parsedH > 0) {
+						baseWidth = parsedW;
+						baseHeight = parsedH;
+					}
+				}
+
+				if (!(baseWidth > 0 && baseHeight > 0)) {
+					const rect = svg.getBoundingClientRect();
+					if (rect.width > 0 && rect.height > 0) {
+						baseWidth = rect.width;
+						baseHeight = rect.height;
+					}
+				}
+
+				if (!(baseWidth > 0 && baseHeight > 0)) {
+					return;
+				}
+
+				svg.dataset.tikzBaseWidth = String(baseWidth);
+				svg.dataset.tikzBaseHeight = String(baseHeight);
+			}
+
+			const scaledWidth = Math.max(1, baseWidth * scale);
+			const scaledHeight = Math.max(1, baseHeight * scale);
+			const outerPadding = 20;
+
+			svg.style.transform = 'none';
+			svg.style.width = `${scaledWidth}px`;
+			svg.style.height = `${scaledHeight}px`;
+			svg.style.maxWidth = 'none';
+			svg.style.maxHeight = 'none';
+
+			content.style.padding = `${outerPadding}px`;
+			content.style.minWidth = `${Math.ceil(scaledWidth + outerPadding * 2)}px`;
+			content.style.minHeight = `${Math.ceil(scaledHeight + outerPadding * 2)}px`;
 		};
 
-		const addToolbarButton = (text: string, onClick: () => void, ariaLabel?: string, extraCls?: string) => {
+		const addToolbarButton = (
+			text: string,
+			onClick: () => void,
+			ariaLabel?: string,
+			extraCls?: string,
+			showToolbarAfterClick = true,
+		) => {
 			const button = toolbar.createEl('button', { text, cls: 'tikzjax-toolbar-btn' });
+			if (isMobileRuntime) {
+				button.style.setProperty('font-size', '16px', 'important');
+				button.style.setProperty('font-weight', '400', 'important');
+				button.style.setProperty('line-height', '1', 'important');
+				button.style.setProperty('padding', '3px 8px', 'important');
+				button.style.setProperty('border-radius', '8px', 'important');
+				button.style.setProperty('box-shadow', 'none', 'important');
+				button.style.setProperty('min-width', '0', 'important');
+				button.style.setProperty('min-height', '0', 'important');
+				button.style.setProperty('width', 'auto', 'important');
+				button.style.setProperty('height', 'auto', 'important');
+				button.style.setProperty('display', 'inline-flex', 'important');
+				button.style.setProperty('align-items', 'center', 'important');
+				button.style.setProperty('justify-content', 'center', 'important');
+				button.style.setProperty('white-space', 'nowrap', 'important');
+			}
 			if (extraCls) {
 				button.addClass(extraCls);
 			}
@@ -150,38 +312,65 @@ export default class TikzJaxPlugin extends Plugin {
 			button.addEventListener('click', (event) => {
 				event.preventDefault();
 				event.stopPropagation();
+				if (showToolbarAfterClick) {
+					keepToolbarVisible(600);
+				}
 				onClick();
 			});
 		};
 
-		addToolbarButton('code', () => {
+		addToolbarButton('Code', () => {
 			void this.revealCodeBlock(ctx, el, source);
 		}, '显示源码', 'is-code-btn');
-		addToolbarButton('Rerender', () => void renderNow(true));
+		addToolbarButton('Rerender', () => void renderNow(true, { keepToolbarVisible: false }), undefined, undefined, false);
 		addToolbarButton('-5%', () => {
-			scale = Math.max(0.5, scale - 0.05);
+			scale = normalizeScale(scale - 0.05);
 			applyScale();
+			persistScale();
 		});
 		addToolbarButton('+5%', () => {
-			scale = Math.min(2.5, scale + 0.05);
+			scale = normalizeScale(scale + 0.05);
 			applyScale();
+			persistScale();
+		});
+		addToolbarButton('Reset', () => {
+			scale = 1;
+			applyScale();
+			persistScale();
 		});
 
 		frame.addEventListener('click', (event) => {
 			event.stopPropagation();
-			toolbar.addClass('is-visible');
+			keepToolbarVisible();
 		});
 
 		const onDocClick = (event: MouseEvent) => {
-			if (!frame.contains(event.target as Node)) {
+			if (isRendering || Date.now() < suppressHideUntil) {
+				return;
+			}
+
+			const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+			const clickedInsideFrame = path.length > 0 ? path.includes(frame) : frame.contains(event.target as Node);
+			if (!clickedInsideFrame) {
 				toolbar.removeClass('is-visible');
 			}
 		};
 		document.addEventListener('click', onDocClick, true);
 		this.register(() => document.removeEventListener('click', onDocClick, true));
 
-		renderNow = async (forceRebuild = false) => {
+		renderNow = async (forceRebuild = false, options) => {
+			const keepToolbarDuringRender = options?.keepToolbarVisible ?? false;
 			const startTime = Date.now();
+			const hashLabel = info.hash.slice(0, 12);
+			let keepReservedSpaceForError = false;
+			let keepScaledLayout = false;
+			isRendering = true;
+			if (keepToolbarDuringRender) {
+				keepToolbarVisible(800);
+			} else {
+				toolbar.removeClass('is-visible');
+			}
+			reserveLoadingSpace();
 			statusLabel.empty();
 			content.empty();
 			content.removeClass('is-error');
@@ -200,15 +389,36 @@ export default class TikzJaxPlugin extends Plugin {
 
 			try {
 				if (!forceRebuild && this.settings.autoLoadCache) {
+					this.logTexDebug('cache lookup', {
+						hash: hashLabel,
+						queueDepth: this.renderer.getQueueDepth(),
+					});
 					const cached = await this.cacheManager.get(info.hash);
 					if (cached) {
+						this.renderPerfStats.cacheHits += 1;
+						this.logTexDebug('cache hit', {
+							hash: hashLabel,
+							htmlLength: cached.length,
+						});
 						this.mountRenderedOutput(content, cached);
 						statusLabel.setText('cached');
 						statusLabel.setAttr('data-kind', 'cached');
 						applyScale();
+						keepScaledLayout = true;
 						return;
 					}
+					this.renderPerfStats.cacheMisses += 1;
+					this.logTexDebug('cache miss', { hash: hashLabel });
 				}
+
+				const queueDepthBeforeSlotWait = this.renderer.getQueueDepth();
+				this.logTexDebug('render start', {
+					hash: hashLabel,
+					forceRebuild,
+					timeoutMs: this.settings.renderTimeoutMs,
+					queueDepth: queueDepthBeforeSlotWait,
+				});
+				await this.waitForRenderSlot(forceRebuild);
 
 				const input: TikzRenderInput = {
 					source: info.source,
@@ -223,12 +433,32 @@ export default class TikzJaxPlugin extends Plugin {
 				statusLabel.setText('rendered');
 				statusLabel.setAttr('data-kind', 'rendered');
 				applyScale();
+				keepScaledLayout = true;
+				this.logTexDebug('render success', {
+					hash: hashLabel,
+					durationMs: Date.now() - startTime,
+					htmlLength: html.length,
+					queueDepth: this.renderer.getQueueDepth(),
+				});
 
 				if (this.settings.enableCache) {
 					await this.cacheManager.set(info.hash, html);
+					this.logTexDebug('cache store success', {
+						hash: hashLabel,
+						htmlLength: html.length,
+					});
 				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
+				keepReservedSpaceForError = true;
+				this.logTexDebug('render failed', {
+					hash: hashLabel,
+					forceRebuild,
+					timeoutMs: this.settings.renderTimeoutMs,
+					queueDepth: this.renderer.getQueueDepth(),
+					durationMs: Date.now() - startTime,
+					message,
+				});
 				content.empty();
 				content.removeClass('is-loading');
 				content.addClass('is-error');
@@ -238,6 +468,13 @@ export default class TikzJaxPlugin extends Plugin {
 				statusLabel.setText('failed');
 				statusLabel.setAttr('data-kind', 'failed');
 			} finally {
+				isRendering = false;
+				if (keepToolbarDuringRender) {
+					keepToolbarVisible(180);
+				}
+				if (!keepReservedSpaceForError && !keepScaledLayout) {
+					clearLoadingSpace();
+				}
 				window.clearInterval(timer);
 				const duration = ((Date.now() - startTime) / 1000).toFixed(1);
 				timeLabel.setText(`⏱ ${duration}s`);
@@ -251,7 +488,10 @@ export default class TikzJaxPlugin extends Plugin {
 					for (const entry of entries) {
 						if (entry.isIntersecting) {
 							observer.disconnect();
-							void renderNow(false);
+							const staggerMs = Math.min(500, Math.max(0, this.renderer.getQueueDepth()) * 50);
+							window.setTimeout(() => {
+								void renderNow(false);
+							}, staggerMs);
 							break;
 						}
 					}
@@ -263,6 +503,121 @@ export default class TikzJaxPlugin extends Plugin {
 		} else {
 			void renderNow(false);
 		}
+	}
+
+	private async waitForRenderSlot(forceRebuild: boolean): Promise<void> {
+		const queueLimit = forceRebuild ? TikzJaxPlugin.FORCED_RENDER_QUEUE_LIMIT : TikzJaxPlugin.NORMAL_RENDER_QUEUE_LIMIT;
+		if (queueLimit <= 0) return;
+
+		const started = performance.now();
+		while (this.renderer.getQueueDepth() >= queueLimit) {
+			if (performance.now() - started >= TikzJaxPlugin.MAX_QUEUE_WAIT_FOR_SLOT_MS) {
+				return;
+			}
+
+			await new Promise<void>((resolve) => window.setTimeout(resolve, TikzJaxPlugin.QUEUE_WAIT_SLICE_MS));
+		}
+	}
+
+	private createEmptyPerfStats(): RenderPerfStats {
+		return {
+			cacheHits: 0,
+			cacheMisses: 0,
+			workerRenders: 0,
+			workerFailures: 0,
+			workerTimeouts: 0,
+			queueWaitTotalMs: 0,
+			workerDurationTotalMs: 0,
+			maxQueueWaitMs: 0,
+			maxWorkerDurationMs: 0,
+			maxQueuedAhead: 0,
+			lastErrors: [],
+		};
+	}
+
+	private recordRendererTelemetry(event: RenderTelemetryEvent) {
+		this.renderPerfStats.queueWaitTotalMs += event.queueWaitMs;
+		this.renderPerfStats.workerDurationTotalMs += event.workerDurationMs;
+		this.renderPerfStats.maxQueueWaitMs = Math.max(this.renderPerfStats.maxQueueWaitMs, event.queueWaitMs);
+		this.renderPerfStats.maxWorkerDurationMs = Math.max(this.renderPerfStats.maxWorkerDurationMs, event.workerDurationMs);
+		this.renderPerfStats.maxQueuedAhead = Math.max(this.renderPerfStats.maxQueuedAhead, event.queuedAhead);
+
+		if (event.success) {
+			this.renderPerfStats.workerRenders += 1;
+		} else {
+			this.renderPerfStats.workerFailures += 1;
+			if (event.timeout) {
+				this.renderPerfStats.workerTimeouts += 1;
+			}
+
+			if (event.errorMessage) {
+				this.renderPerfStats.lastErrors.push(event.errorMessage);
+				if (this.renderPerfStats.lastErrors.length > 5) {
+					this.renderPerfStats.lastErrors.splice(0, this.renderPerfStats.lastErrors.length - 5);
+				}
+			}
+		}
+	}
+
+	private registerPerformanceCommands() {
+		this.addCommand({
+			id: 'tikzjax-show-performance-stats',
+			name: 'TikzJax: Show render performance stats',
+			callback: () => this.showPerformanceStats(),
+		});
+
+		this.addCommand({
+			id: 'tikzjax-reset-performance-stats',
+			name: 'TikzJax: Reset render performance stats',
+			callback: () => {
+				this.renderPerfStats = this.createEmptyPerfStats();
+				new Notice('TikzJax: 性能统计已重置。');
+			},
+		});
+	}
+
+	private showPerformanceStats() {
+		const stats = this.renderPerfStats;
+		const workerRuns = stats.workerRenders + stats.workerFailures;
+		const cacheChecks = stats.cacheHits + stats.cacheMisses;
+		const avgQueueWait = workerRuns > 0 ? stats.queueWaitTotalMs / workerRuns : 0;
+		const avgWorkerDuration = workerRuns > 0 ? stats.workerDurationTotalMs / workerRuns : 0;
+		const cacheHitRate = cacheChecks > 0 ? (stats.cacheHits / cacheChecks) * 100 : 0;
+
+		const summary = {
+			cacheHits: stats.cacheHits,
+			cacheMisses: stats.cacheMisses,
+			cacheHitRate: `${cacheHitRate.toFixed(1)}%`,
+			workerSuccess: stats.workerRenders,
+			workerFailures: stats.workerFailures,
+			timeouts: stats.workerTimeouts,
+			avgQueueWaitMs: Number(avgQueueWait.toFixed(1)),
+			maxQueueWaitMs: Number(stats.maxQueueWaitMs.toFixed(1)),
+			avgWorkerMs: Number(avgWorkerDuration.toFixed(1)),
+			maxWorkerMs: Number(stats.maxWorkerDurationMs.toFixed(1)),
+			maxQueuedAhead: stats.maxQueuedAhead,
+			currentQueueDepth: this.renderer.getQueueDepth(),
+		};
+
+		console.table(summary);
+		if (stats.lastErrors.length > 0) {
+			console.log('TikzJax recent render errors:', stats.lastErrors);
+		}
+
+		new Notice(
+			`TikzJax性能: 命中${summary.cacheHits}/${cacheChecks} (${summary.cacheHitRate}), ` +
+				`平均排队${summary.avgQueueWaitMs}ms, 平均渲染${summary.avgWorkerMs}ms, 失败${summary.workerFailures}`,
+			8000,
+		);
+	}
+
+	private logTexDebug(message: string, data?: unknown) {
+		if (!this.settings.showTexConsole) return;
+		if (data === undefined) {
+			console.log(`[TikzJax] ${message}`);
+			return;
+		}
+		console.log(`[TikzJax] ${message}`, data);
 	}
 
 	private mountRenderedOutput(content: HTMLElement, html: string) {

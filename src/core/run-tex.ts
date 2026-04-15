@@ -12,9 +12,42 @@ export interface TexDataset {
 
 let coredump: Uint8Array | null = null;
 let code: Uint8Array | null = null;
+let wasmModule: WebAssembly.Module | null = null;
 let resourcesBaseUrl = '';
 let loaded = false;
 const CDN_BASE = 'https://cdn.jsdelivr.net/npm/@drgrice1/tikzjax@1.0.0-beta24/dist';
+const RESOURCE_CACHE_MAX_ENTRIES = 256;
+const MISSING_LOCAL_RESOURCES_MAX_ENTRIES = 512;
+const resourceCache = new Map<string, Promise<Uint8Array>>();
+const missingLocalResourceFiles = new Set<string>();
+
+const touchResourceCache = (url: string, value: Promise<Uint8Array>) => {
+	if (resourceCache.has(url)) {
+		resourceCache.delete(url);
+	}
+
+	resourceCache.set(url, value);
+
+	while (resourceCache.size > RESOURCE_CACHE_MAX_ENTRIES) {
+		const oldestKey = resourceCache.keys().next().value;
+		if (!oldestKey) break;
+		resourceCache.delete(oldestKey);
+	}
+};
+
+const rememberMissingLocalResource = (relativeFile: string) => {
+	if (missingLocalResourceFiles.has(relativeFile)) {
+		return;
+	}
+
+	missingLocalResourceFiles.add(relativeFile);
+
+	while (missingLocalResourceFiles.size > MISSING_LOCAL_RESOURCES_MAX_ENTRIES) {
+		const oldestMissing = missingLocalResourceFiles.values().next().value;
+		if (!oldestMissing) break;
+		missingLocalResourceFiles.delete(oldestMissing);
+	}
+};
 
 const loadDecompress = async (url: string): Promise<Uint8Array> => {
     const response = await fetch(url);
@@ -39,15 +72,35 @@ const loadDecompress = async (url: string): Promise<Uint8Array> => {
     }
 };
 
+const loadDecompressCached = async (url: string): Promise<Uint8Array> => {
+	const cached = resourceCache.get(url);
+	if (cached) {
+		touchResourceCache(url, cached);
+		return cached;
+	}
+
+	const loader = loadDecompress(url).catch((error) => {
+		resourceCache.delete(url);
+		throw error;
+	});
+
+	touchResourceCache(url, loader);
+	return loader;
+};
+
 export async function loadTexEngine(urlRoot: string): Promise<void> {
 	if (loaded && resourcesBaseUrl === urlRoot) {
 		return;
 	}
 
 	resourcesBaseUrl = urlRoot.replace(/\/$/, '');
-	code = await loadDecompress(`${resourcesBaseUrl}/tex.wasm.gz`);
-	const coreDumpRaw = await loadDecompress(`${resourcesBaseUrl}/core.dump.gz`);
+	resourceCache.clear();
+	missingLocalResourceFiles.clear();
+
+	code = await loadDecompressCached(`${resourcesBaseUrl}/tex.wasm.gz`);
+	const coreDumpRaw = await loadDecompressCached(`${resourcesBaseUrl}/core.dump.gz`);
 	coredump = coreDumpRaw.slice(0, library.pages * 65536);
+	wasmModule = await WebAssembly.compile(code as unknown as BufferSource);
 	loaded = true;
 }
 
@@ -93,19 +146,26 @@ export async function texify(input: string, dataset: TexDataset): Promise<string
 
 	const memory = new WebAssembly.Memory({ initial: library.pages, maximum: library.pages });
 	const buffer = new Uint8Array(memory.buffer, 0, library.pages * 65536);
-	buffer.set(coredump.slice(0));
+	buffer.set(coredump);
 
 	library.setMemory(memory.buffer);
 	library.setInput('input.tex\n\\end\n');
 	library.setFileLoader(async (relativeFile: string) => {
-		try {
-			return await loadDecompress(`${resourcesBaseUrl}/${relativeFile}`);
-		} catch {
-			return await loadDecompress(`${CDN_BASE}/${relativeFile}`);
+		if (!missingLocalResourceFiles.has(relativeFile)) {
+			try {
+				return await loadDecompressCached(`${resourcesBaseUrl}/${relativeFile}`);
+			} catch {
+				rememberMissingLocalResource(relativeFile);
+			}
 		}
+
+		return await loadDecompressCached(`${CDN_BASE}/${relativeFile}`);
 	});
 
-	const wasmModule = await WebAssembly.compile(code as unknown as BufferSource);
+	if (!wasmModule) {
+		wasmModule = await WebAssembly.compile(code as unknown as BufferSource);
+	}
+
 	const wasmInstance = await WebAssembly.instantiate(wasmModule, { library, env: { memory } });
 
 	await library.executeAsync(wasmInstance.exports as WebAssembly.Exports & { main: () => void });

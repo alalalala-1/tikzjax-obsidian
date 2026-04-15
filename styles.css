@@ -20,11 +20,11 @@
 
 .tikzjax-time-label {
 	position: absolute;
-	top: 4px;
-	left: 6px;
-	font-size: 10px;
+	top: 3px;
+	left: 4px;
+	font-size: 9px;
 	font-weight: 600;
-	padding: 2px 8px;
+	padding: 2px 7px;
 	border-radius: 999px;
 	background: #c62828;
 	color: #fff;
@@ -33,12 +33,12 @@
 
 .tikzjax-status-label {
 	position: absolute;
-	left: 6px;
-	bottom: 4px;
-	font-size: 10px;
+	left: 4px;
+	bottom: 3px;
+	font-size: 9px;
 	font-weight: 600;
 	text-transform: lowercase;
-	padding: 2px 8px;
+	padding: 2px 7px;
 	border-radius: 999px;
 	background: #c62828;
 	color: #fff;
@@ -75,6 +75,14 @@
 	position: relative;
 }
 
+.tikzjax-content.is-loading {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 260px;
+	min-height: 170px;
+}
+
 .tikzjax-content svg {
 	max-width: 100%;
 	height: auto;
@@ -87,15 +95,15 @@
 	flex-direction: column;
 	align-items: center;
 	gap: 8px;
-	padding: 10px 0;
+	padding: 16px 0;
 	color: var(--text-muted);
 }
 
 .tikzjax-spinner {
-	width: 20px;
-	height: 20px;
+	width: 80px;
+	height: 80px;
 	border-radius: 50%;
-	border: 2px solid var(--background-modifier-border);
+	border: 5px solid var(--background-modifier-border);
 	border-top-color: var(--interactive-accent);
 	animation: tikzjax-spin 1s linear infinite;
 }
@@ -160,13 +168,37 @@
 
 .tikzjax-toolbar-btn.is-code-btn {
 	font-family: var(--font-monospace);
-	font-weight: 700;
+	font-weight: 400;
 	letter-spacing: -0.2px;
 	min-width: 30px;
 }
 
 .tikzjax-toolbar-btn:hover {
 	background: var(--background-modifier-hover);
+}
+
+/* Mobile-specific reinforcement (Obsidian Android/iOS) */
+.is-mobile .tikzjax-toolbar {
+	gap: 4px;
+	right: 6px;
+	top: 6px;
+}
+
+.is-mobile .tikzjax-toolbar-btn {
+	font-size: 20px !important;
+	line-height: 1 !important;
+	padding: 4px !important;
+	min-width: 32px;
+	min-height: 32px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.is-mobile .tikzjax-time-label,
+.is-mobile .tikzjax-status-label {
+	font-size: 11px !important;
+	padding: 3px 8px !important;
 }
 
 .tikzjax-lazy-tip {

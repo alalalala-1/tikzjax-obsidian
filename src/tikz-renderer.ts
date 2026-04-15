@@ -2,6 +2,15 @@ import { normalizePath, Notice } from 'obsidian';
 import type TikzJaxPlugin from './main';
 import type { TikzRenderInput, TikzJaxSettings } from './types';
 
+export interface RenderTelemetryEvent {
+	queueWaitMs: number;
+	workerDurationMs: number;
+	queuedAhead: number;
+	success: boolean;
+	timeout: boolean;
+	errorMessage?: string;
+}
+
 interface WorkerReadyMessage {
 	type: 'ready';
 }
@@ -37,10 +46,15 @@ export class TikzWorkerRenderer {
 	private initialized = false;
 	private initPromise: Promise<void> | null = null;
 	private queue: Promise<void> = Promise.resolve();
+	private queueDepth = 0;
 	private pending = new Map<string, PendingRequest>();
 	private initReject: ((error: Error) => void) | null = null;
 
-	constructor(private plugin: TikzJaxPlugin, private settingsGetter: () => TikzJaxSettings) {}
+	constructor(
+		private plugin: TikzJaxPlugin,
+		private settingsGetter: () => TikzJaxSettings,
+		private telemetryReporter?: (event: RenderTelemetryEvent) => void,
+	) {}
 
 	async initialize(): Promise<void> {
 		if (this.initialized) return;
@@ -64,21 +78,48 @@ export class TikzWorkerRenderer {
 
 	async render(input: TikzRenderInput, timeoutMs: number): Promise<string> {
 		await this.initialize();
+		const enqueuedAt = performance.now();
+		const queuedAhead = this.queueDepth;
+		this.queueDepth += 1;
 
 		return new Promise<string>((resolve, reject) => {
 			this.queue = this.queue
 				.then(async () => {
+					const renderStartedAt = performance.now();
+					const queueWaitMs = renderStartedAt - enqueuedAt;
 					try {
 						const html = await this.renderOnce(input, timeoutMs);
+						this.telemetryReporter?.({
+							queueWaitMs,
+							workerDurationMs: performance.now() - renderStartedAt,
+							queuedAhead,
+							success: true,
+							timeout: false,
+						});
 						resolve(html);
 					} catch (error) {
-						reject(error instanceof Error ? error : new Error(String(error)));
+						const err = error instanceof Error ? error : new Error(String(error));
+						this.telemetryReporter?.({
+							queueWaitMs,
+							workerDurationMs: performance.now() - renderStartedAt,
+							queuedAhead,
+							success: false,
+							timeout: /render timeout/i.test(err.message),
+							errorMessage: err.message,
+						});
+						reject(err);
+					} finally {
+						this.queueDepth = Math.max(0, this.queueDepth - 1);
 					}
 				})
 				.catch(() => {
 					/* keep queue alive */
 				});
 		});
+	}
+
+	getQueueDepth(): number {
+		return this.queueDepth;
 	}
 
 	destroy() {
