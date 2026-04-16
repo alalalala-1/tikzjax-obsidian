@@ -168,6 +168,9 @@ export default class TikzJaxPlugin extends Plugin {
 		const isMobileRuntime = Platform.isMobile;
 		const minScale = 0.5;
 		const maxScale = 2.5;
+		let lastReservedMinWidth = '';
+		let lastReservedMinHeight = '';
+		let lastAppliedScaleSignature = '';
 
 		const clampScale = (value: number) => {
 			if (!Number.isFinite(value)) return 1;
@@ -231,17 +234,28 @@ export default class TikzJaxPlugin extends Plugin {
 				height = Math.max(height, fallbackHeight);
 			}
 
-			if (width > 0) {
-				content.style.minWidth = `${Math.max(320, width)}px`;
+			const nextMinWidth = width > 0 ? `${Math.max(320, width)}px` : '';
+			const nextMinHeight = height > 0 ? `${Math.max(210, height)}px` : '';
+
+			if (nextMinWidth && nextMinWidth !== lastReservedMinWidth) {
+				content.style.minWidth = nextMinWidth;
+				lastReservedMinWidth = nextMinWidth;
 			}
-			if (height > 0) {
-				content.style.minHeight = `${Math.max(210, height)}px`;
+			if (nextMinHeight && nextMinHeight !== lastReservedMinHeight) {
+				content.style.minHeight = nextMinHeight;
+				lastReservedMinHeight = nextMinHeight;
 			}
 		};
 
 		const clearLoadingSpace = () => {
-			content.style.removeProperty('min-width');
-			content.style.removeProperty('min-height');
+			if (lastReservedMinWidth) {
+				content.style.removeProperty('min-width');
+				lastReservedMinWidth = '';
+			}
+			if (lastReservedMinHeight) {
+				content.style.removeProperty('min-height');
+				lastReservedMinHeight = '';
+			}
 		};
 
 		const applyScale = () => {
@@ -284,6 +298,11 @@ export default class TikzJaxPlugin extends Plugin {
 			const scaledWidth = Math.max(1, baseWidth * scale);
 			const scaledHeight = Math.max(1, baseHeight * scale);
 			const outerPadding = 20;
+			const signature = `${scaledWidth}|${scaledHeight}|${outerPadding}`;
+			if (signature === lastAppliedScaleSignature) {
+				return;
+			}
+			lastAppliedScaleSignature = signature;
 
 			svg.style.transform = 'none';
 			svg.style.width = `${scaledWidth}px`;
@@ -292,8 +311,16 @@ export default class TikzJaxPlugin extends Plugin {
 			svg.style.maxHeight = 'none';
 
 			content.style.padding = `${outerPadding}px`;
-			content.style.minWidth = `${Math.ceil(scaledWidth + outerPadding * 2)}px`;
-			content.style.minHeight = `${Math.ceil(scaledHeight + outerPadding * 2)}px`;
+			const scaledMinWidth = `${Math.ceil(scaledWidth + outerPadding * 2)}px`;
+			const scaledMinHeight = `${Math.ceil(scaledHeight + outerPadding * 2)}px`;
+			if (scaledMinWidth !== lastReservedMinWidth) {
+				content.style.minWidth = scaledMinWidth;
+				lastReservedMinWidth = scaledMinWidth;
+			}
+			if (scaledMinHeight !== lastReservedMinHeight) {
+				content.style.minHeight = scaledMinHeight;
+				lastReservedMinHeight = scaledMinHeight;
+			}
 		};
 
 		const addToolbarButton = (

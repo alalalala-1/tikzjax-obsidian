@@ -1,7 +1,7 @@
 {
 	"id": "TikzJaxObsidian",
 	"name": "TikzJaxObsidian",
-	"version": "0.6",
+	"version": "0.7",
 	"minAppVersion": "0.15.0",
 	"description": "Render TikZ diagrams in Obsidian with local caching support",
 	"author": "Saga",
