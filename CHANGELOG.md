@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.6
+
+发布日期：2026-04-16
+
+### 关键修复
+
+- 修复 `Code` 按钮偶发无响应问题：避免在同一次点击事件中立即切换视图，降低预览 DOM 切换竞态导致的失败。
+- 修复 `Code` 按钮点击时的回归异常：补全 `createTraceId`，解决 `this.createTraceId is not a function` 导致流程中断。
+- 强化源码定位与全选链路：点击时预先缓存目标块信息（sourcePath/lineStart/lineEnd），减少对失效 DOM 的依赖。
+- 增强源码模式与编辑器就绪等待，降低“已切换但未成功选中”的偶发情况。
+
+### 渲染稳定性
+
+- 为渲染超时增加一次自动重试，并使用扩展超时窗口（上限 120s），提升复杂图形首次渲染成功率。
+- 超时失败文案增加设置引导，提示可在设置中调整 `Render timeout`。
+
+### 诊断日志
+
+- 新增 Code 按钮链路分阶段调试日志（含 traceId）：
+  - `code-button click captured`
+  - `code-focus reveal start`
+  - `code-focus success`
+  - `code-focus fallback to modal`
+
 ## v0.5
 
 发布日期：2026-04-15

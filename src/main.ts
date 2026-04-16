@@ -1,4 +1,15 @@
-import { Plugin, MarkdownPostProcessorContext, MarkdownView, EditorPosition, Notice, normalizePath, TFile, Modal, Platform } from 'obsidian';
+import {
+	Plugin,
+	MarkdownPostProcessorContext,
+	MarkdownView,
+	EditorPosition,
+	Notice,
+	normalizePath,
+	TFile,
+	Modal,
+	Platform,
+	type MarkdownSectionInformation,
+} from 'obsidian';
 import { TikzJaxSettings, DEFAULT_SETTINGS, TikzCodeBlockInfo, TikzRenderInput } from './types';
 import { CacheManager } from './cache-manager';
 import { createHash, createCacheKey } from './utils/hash';
@@ -18,6 +29,12 @@ interface RenderPerfStats {
 	maxWorkerDurationMs: number;
 	maxQueuedAhead: number;
 	lastErrors: string[];
+}
+
+interface CodeFocusTarget {
+	sourcePath?: string;
+	sectionLineStart?: number;
+	sectionLineEnd?: number;
 }
 
 export default class TikzJaxPlugin extends Plugin {
@@ -320,7 +337,15 @@ export default class TikzJaxPlugin extends Plugin {
 		};
 
 		addToolbarButton('Code', () => {
-			void this.revealCodeBlock(ctx, el, source);
+			const traceId = this.createTraceId('code');
+			const focusTarget = this.captureCodeFocusTarget(ctx, el);
+			this.logTexDebug('code-button click captured', {
+				traceId,
+				focusTarget,
+			});
+			window.setTimeout(() => {
+				void this.revealCodeBlock(source, focusTarget, traceId);
+			}, 0);
 		}, '显示源码', 'is-code-btn');
 		addToolbarButton('Rerender', () => void renderNow(true, { keepToolbarVisible: false }), undefined, undefined, false);
 		addToolbarButton('-5%', () => {
@@ -428,7 +453,29 @@ export default class TikzJaxPlugin extends Plugin {
 					showConsole: this.settings.showTexConsole,
 				};
 
-				const html = await this.renderer.render(input, this.settings.renderTimeoutMs);
+				const baseTimeoutMs = Math.max(1000, Math.round(this.settings.renderTimeoutMs));
+				const retryTimeoutMs = this.getExtendedTimeoutForRetry(baseTimeoutMs);
+				let retriedAfterTimeout = false;
+				let html: string;
+
+				try {
+					html = await this.renderer.render(input, baseTimeoutMs);
+				} catch (error) {
+					if (retryTimeoutMs && this.isRenderTimeoutError(error)) {
+						retriedAfterTimeout = true;
+						statusLabel.setText(`retry ${Math.round(retryTimeoutMs / 1000)}s`);
+						statusLabel.setAttr('data-kind', 'retry');
+						this.logTexDebug('render timeout, retrying once with extended timeout', {
+							hash: hashLabel,
+							baseTimeoutMs,
+							retryTimeoutMs,
+						});
+						html = await this.renderer.render(input, retryTimeoutMs);
+					} else {
+						throw error;
+					}
+				}
+
 				this.mountRenderedOutput(content, html);
 				statusLabel.setText('rendered');
 				statusLabel.setAttr('data-kind', 'rendered');
@@ -439,6 +486,9 @@ export default class TikzJaxPlugin extends Plugin {
 					durationMs: Date.now() - startTime,
 					htmlLength: html.length,
 					queueDepth: this.renderer.getQueueDepth(),
+					retriedAfterTimeout,
+					baseTimeoutMs,
+					retryTimeoutMs: retriedAfterTimeout ? retryTimeoutMs : undefined,
 				});
 
 				if (this.settings.enableCache) {
@@ -449,7 +499,10 @@ export default class TikzJaxPlugin extends Plugin {
 					});
 				}
 			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
+				const rawMessage = error instanceof Error ? error.message : String(error);
+				const message = this.isRenderTimeoutError(error)
+					? `${rawMessage}（可在设置中提高 Render timeout，当前 ${this.settings.renderTimeoutMs}ms）`
+					: rawMessage;
 				keepReservedSpaceForError = true;
 				this.logTexDebug('render failed', {
 					hash: hashLabel,
@@ -620,6 +673,31 @@ export default class TikzJaxPlugin extends Plugin {
 		console.log(`[TikzJax] ${message}`, data);
 	}
 
+	private isRenderTimeoutError(error: unknown): boolean {
+		const message = error instanceof Error ? error.message : String(error);
+		return /render timeout/i.test(message);
+	}
+
+	private getExtendedTimeoutForRetry(baseTimeoutMs: number): number | null {
+		const normalized = Number.isFinite(baseTimeoutMs) ? Math.max(1000, Math.round(baseTimeoutMs)) : 8000;
+		const maxRetryTimeoutMs = 120000;
+		if (normalized >= maxRetryTimeoutMs) {
+			return null;
+		}
+
+		const candidate = Math.max(60000, normalized + 15000, Math.round(normalized * 4));
+		const nextTimeout = Math.min(maxRetryTimeoutMs, candidate);
+		if (nextTimeout <= normalized) {
+			return null;
+		}
+
+		return nextTimeout;
+	}
+
+	private createTraceId(prefix: string): string {
+		return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	}
+
 	private mountRenderedOutput(content: HTMLElement, html: string) {
 		content.empty();
 		content.removeClass('is-loading');
@@ -645,26 +723,57 @@ export default class TikzJaxPlugin extends Plugin {
 		throw new Error('TeX 引擎未返回有效 SVG 输出。');
 	}
 
-	private async revealCodeBlock(ctx: MarkdownPostProcessorContext, blockEl: HTMLElement, source: string) {
-		const focused = await this.focusCodeBlock(ctx, blockEl, source);
+	private captureCodeFocusTarget(ctx: MarkdownPostProcessorContext, blockEl: HTMLElement): CodeFocusTarget {
+		const section = ctx.getSectionInfo?.(blockEl) ?? null;
+		return {
+			sourcePath: ctx.sourcePath,
+			sectionLineStart: this.toNonNegativeInteger(section?.lineStart),
+			sectionLineEnd: this.toNonNegativeInteger(section?.lineEnd),
+		};
+	}
+
+	private toNonNegativeInteger(value: unknown): number | undefined {
+		if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+			return undefined;
+		}
+
+		return value;
+	}
+
+	private async revealCodeBlock(source: string, target: CodeFocusTarget, traceId?: string) {
+		this.logTexDebug('code-focus reveal start', {
+			traceId,
+			target,
+			sourceLength: source.length,
+		});
+		const focused = await this.focusCodeBlock(source, target, traceId);
 		if (focused) return;
 
+		this.logTexDebug('code-focus fallback to modal', {
+			traceId,
+			reason: 'editor-focus-failed',
+		});
 		this.openSourceModal(source);
 		new Notice('未能定位到编辑器，已弹出源码并自动全选。');
 	}
 
-	private async focusCodeBlock(ctx: MarkdownPostProcessorContext, blockEl: HTMLElement, source: string): Promise<boolean> {
+	private async focusCodeBlock(source: string, target: CodeFocusTarget, traceId?: string): Promise<boolean> {
 		try {
-			const section = ctx.getSectionInfo?.(blockEl);
-			const sourcePath = ctx.sourcePath;
+			const sourcePath = target.sourcePath;
 
 			let view = await this.getTargetMarkdownView(sourcePath);
 			if (!view) {
+				this.logTexDebug('code-focus no markdown view', { traceId, sourcePath });
 				return false;
 			}
 
 			const switched = await this.ensureSourceMode(view, sourcePath);
 			if (!switched) {
+				this.logTexDebug('code-focus source-mode switch failed', {
+					traceId,
+					sourcePath,
+					viewMode: view.getMode(),
+				});
 				return false;
 			}
 
@@ -672,15 +781,29 @@ export default class TikzJaxPlugin extends Plugin {
 
 			const editor = await this.waitForEditor(view, sourcePath);
 			if (!editor) {
+				this.logTexDebug('code-focus editor unavailable', {
+					traceId,
+					sourcePath,
+					viewMode: view.getMode(),
+				});
 				return false;
 			}
 
-			let range = section ? this.resolveCodeFenceRange(editor, section.lineStart, section.lineEnd) : null;
+			const hasSectionRange =
+				typeof target.sectionLineStart === 'number' && typeof target.sectionLineEnd === 'number';
+			let range = hasSectionRange
+				? this.resolveCodeFenceRange(editor, target.sectionLineStart, target.sectionLineEnd)
+				: null;
 			if (!range) {
 				range = this.findCodeFenceRangeBySource(editor, source);
 			}
 
 			if (!range) {
+				this.logTexDebug('code-focus unable to resolve code fence range', {
+					traceId,
+					target,
+					sourcePreview: source.slice(0, 120),
+				});
 				return false;
 			}
 
@@ -689,8 +812,18 @@ export default class TikzJaxPlugin extends Plugin {
 			editor.setSelection(from, to);
 			editor.scrollIntoView({ from, to }, true);
 			editor.focus?.();
+			this.logTexDebug('code-focus success', {
+				traceId,
+				sourcePath,
+				from,
+				to,
+			});
 			return true;
 		} catch (error) {
+			this.logTexDebug('code-focus exception', {
+				traceId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 			console.error('TikzJax: focusCodeBlock failed.', error);
 			return false;
 		}
@@ -768,12 +901,12 @@ export default class TikzJaxPlugin extends Plugin {
 
 	private async waitForEditor(view: MarkdownView, sourcePath?: string): Promise<MarkdownView['editor'] | null> {
 		let currentView = view;
-		for (let i = 0; i < 20; i++) {
-			if (currentView.editor) {
+		for (let i = 0; i < 48; i++) {
+			if (currentView.getMode() === 'source' && currentView.editor) {
 				return currentView.editor;
 			}
 
-			await new Promise<void>((resolve) => window.setTimeout(resolve, 25));
+			await this.waitForUiTick(25);
 
 			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 			if (activeView && (!sourcePath || activeView.file?.path === sourcePath)) {
@@ -781,7 +914,43 @@ export default class TikzJaxPlugin extends Plugin {
 			}
 		}
 
-		return currentView.editor ?? null;
+		if (currentView.getMode() === 'source' && currentView.editor) {
+			return currentView.editor;
+		}
+
+		return null;
+	}
+
+	private async waitForUiTick(ms: number): Promise<void> {
+		await new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+	}
+
+	private async waitForSourceMode(sourcePath?: string, preferredView?: MarkdownView, retries = 48, delayMs = 25): Promise<MarkdownView | null> {
+		let fallbackView = preferredView ?? this.app.workspace.getActiveViewOfType(MarkdownView) ?? null;
+
+		for (let i = 0; i < retries; i++) {
+			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+			const candidate =
+				activeView && (!sourcePath || activeView.file?.path === sourcePath)
+					? activeView
+					: fallbackView;
+
+			if (candidate?.getMode() === 'source' && (!sourcePath || candidate.file?.path === sourcePath)) {
+				return candidate;
+			}
+
+			if (candidate) {
+				fallbackView = candidate;
+			}
+
+			await this.waitForUiTick(delayMs);
+		}
+
+		if (fallbackView?.getMode() === 'source' && (!sourcePath || fallbackView.file?.path === sourcePath)) {
+			return fallbackView;
+		}
+
+		return null;
 	}
 
 	private async ensureSourceMode(view: MarkdownView, sourcePath?: string): Promise<boolean> {
@@ -804,8 +973,7 @@ export default class TikzJaxPlugin extends Plugin {
 					},
 					true
 				);
-				await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-				if (view.getMode() === 'source') {
+				if (await this.waitForSourceMode(sourcePath, view, 36, 20)) {
 					return true;
 				}
 			}
@@ -817,8 +985,7 @@ export default class TikzJaxPlugin extends Plugin {
 			const setMode = (view as unknown as { setMode?: (mode: string) => Promise<void> | void }).setMode;
 			if (typeof setMode === 'function') {
 				await Promise.resolve(setMode.call(view, 'source'));
-				await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-				if (view.getMode() === 'source') {
+				if (await this.waitForSourceMode(sourcePath, view, 30, 20)) {
 					return true;
 				}
 			}
@@ -839,18 +1006,12 @@ export default class TikzJaxPlugin extends Plugin {
 		for (const commandId of candidateCommands) {
 			if (!commands.commands?.[commandId]) continue;
 			commands.executeCommandById?.(commandId);
-			await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-			const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-			if (activeView?.getMode() === 'source' && (!sourcePath || activeView.file?.path === sourcePath)) {
-				return true;
-			}
-			if (view.getMode() === 'source') {
+			if (await this.waitForSourceMode(sourcePath, view, 24, 25)) {
 				return true;
 			}
 		}
 
-		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-		return activeView?.getMode() === 'source' || view.getMode() === 'source';
+		return Boolean(await this.waitForSourceMode(sourcePath, view, 12, 25));
 	}
 
 	private resolveCodeFenceRange(editor: MarkdownView['editor'], sectionLineStart: number, sectionLineEnd: number) {
