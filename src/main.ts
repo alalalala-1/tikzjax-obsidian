@@ -180,10 +180,10 @@ export default class TikzJaxPlugin extends Plugin {
 		const normalizeScale = (value: number) => Math.round(clampScale(value) * 100) / 100;
 
 		if (isMobileRuntime) {
-			timeLabel.style.fontSize = '11px';
-			timeLabel.style.padding = '3px 8px';
-			statusLabel.style.fontSize = '11px';
-			statusLabel.style.padding = '3px 8px';
+			timeLabel.style.fontSize = '9px';
+			timeLabel.style.padding = '2.5px 6px';
+			statusLabel.style.fontSize = '9px';
+			statusLabel.style.padding = '2.5px 6px';
 		}
 
 		let scale = normalizeScale(this.settings.scaleByHash[info.hash] ?? 1);
@@ -332,11 +332,11 @@ export default class TikzJaxPlugin extends Plugin {
 		) => {
 			const button = toolbar.createEl('button', { text, cls: 'tikzjax-toolbar-btn' });
 			if (isMobileRuntime) {
-				button.style.setProperty('font-size', '16px', 'important');
+				button.style.setProperty('font-size', '13px', 'important');
 				button.style.setProperty('font-weight', '400', 'important');
 				button.style.setProperty('line-height', '1', 'important');
-				button.style.setProperty('padding', '3px 8px', 'important');
-				button.style.setProperty('border-radius', '8px', 'important');
+				button.style.setProperty('padding', '2.5px 6px', 'important');
+				button.style.setProperty('border-radius', '6px', 'important');
 				button.style.setProperty('box-shadow', 'none', 'important');
 				button.style.setProperty('min-width', '0', 'important');
 				button.style.setProperty('min-height', '0', 'important');
