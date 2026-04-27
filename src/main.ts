@@ -332,7 +332,7 @@ export default class TikzJaxPlugin extends Plugin {
 		) => {
 			const button = toolbar.createEl('button', { text, cls: 'tikzjax-toolbar-btn' });
 			if (isMobileRuntime) {
-				button.style.setProperty('font-size', '13px', 'important');
+				button.style.setProperty('font-size', '9px', 'important');
 				button.style.setProperty('font-weight', '400', 'important');
 				button.style.setProperty('line-height', '1', 'important');
 				button.style.setProperty('padding', '2.5px 6px', 'important');

@@ -185,11 +185,11 @@
 }
 
 .is-mobile .tikzjax-toolbar-btn {
-	font-size: 20px !important;
+	font-size: 9px !important;
 	line-height: 1 !important;
-	padding: 4px !important;
-	min-width: 32px;
-	min-height: 32px;
+	padding: 3px !important;
+	min-width: 26px;
+	min-height: 26px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -197,8 +197,8 @@
 
 .is-mobile .tikzjax-time-label,
 .is-mobile .tikzjax-status-label {
-	font-size: 11px !important;
-	padding: 3px 8px !important;
+	font-size: 9px !important;
+	padding: 2.5px 6px !important;
 }
 
 .tikzjax-lazy-tip {
