@@ -9,9 +9,9 @@
 	display: inline-block;
 	width: auto;
 	max-width: 100%;
-	border: 1px solid var(--background-modifier-border);
+	border: 1.5px solid #c62828;
 	border-radius: 14px;
-	background: var(--background-secondary);
+	background: rgba(198, 40, 40, 0.08);
 	overflow: hidden;
 	padding-top: 22px;
 	padding-bottom: 16px;
@@ -22,9 +22,9 @@
 	position: absolute;
 	top: 3px;
 	left: 4px;
-	font-size: 9px;
+	font-size: 7px;
 	font-weight: 600;
-	padding: 2px 7px;
+	padding: 1.5px 6px;
 	border-radius: 999px;
 	background: #c62828;
 	color: #fff;
@@ -35,10 +35,10 @@
 	position: absolute;
 	left: 4px;
 	bottom: 3px;
-	font-size: 9px;
+	font-size: 7px;
 	font-weight: 600;
 	text-transform: lowercase;
-	padding: 2px 7px;
+	padding: 1.5px 6px;
 	border-radius: 999px;
 	background: #c62828;
 	color: #fff;
@@ -156,10 +156,10 @@
 }
 
 .tikzjax-toolbar-btn {
-	font-size: 10px;
+	font-size: 8px;
 	line-height: 1;
-	padding: 3px 6px;
-	border-radius: 7px;
+	padding: 2px 5px;
+	border-radius: 6px;
 	border: 1px solid var(--background-modifier-border);
 	background: var(--background-primary-alt);
 	color: var(--text-normal);

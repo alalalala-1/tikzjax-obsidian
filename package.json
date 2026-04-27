@@ -1,6 +1,6 @@
 {
 	"name": "tikzjax-obsidian",
-	"version": "0.7",
+	"version": "0.8",
 	"description": "Render TikZ diagrams in Obsidian with local caching support",
 	"main": "main.js",
 	"scripts": {
