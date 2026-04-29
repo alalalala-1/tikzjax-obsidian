@@ -176,6 +176,21 @@
 	background: var(--background-modifier-hover);
 }
 
+/* Large-screen mobile (e.g. Boox T13C, 3200x2400) */
+@media (min-width: 2000px), (min-height: 2000px) {
+	.is-mobile .tikzjax-toolbar-btn {
+		font-size: 12px !important;
+		padding: 4px 10px !important;
+		border-radius: 8px !important;
+	}
+
+	.is-mobile .tikzjax-time-label,
+	.is-mobile .tikzjax-status-label {
+		font-size: 12px !important;
+		padding: 3px 8px !important;
+	}
+}
+
 /* Mobile-specific reinforcement (Obsidian Android/iOS) */
 .is-mobile .tikzjax-toolbar {
 	gap: 4px;

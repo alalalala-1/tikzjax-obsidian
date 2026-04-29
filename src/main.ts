@@ -180,10 +180,13 @@ export default class TikzJaxPlugin extends Plugin {
 		const normalizeScale = (value: number) => Math.round(clampScale(value) * 100) / 100;
 
 		if (isMobileRuntime) {
-			timeLabel.style.fontSize = '9px';
-			timeLabel.style.padding = '2.5px 6px';
-			statusLabel.style.fontSize = '9px';
-			statusLabel.style.padding = '2.5px 6px';
+			const isLargeScreen = window.screen.width >= 2000 || window.screen.height >= 2000;
+			const labelFontSize = isLargeScreen ? '12px' : '9px';
+			const labelPadding = isLargeScreen ? '3px 8px' : '2.5px 6px';
+			timeLabel.style.fontSize = labelFontSize;
+			timeLabel.style.padding = labelPadding;
+			statusLabel.style.fontSize = labelFontSize;
+			statusLabel.style.padding = labelPadding;
 		}
 
 		let scale = normalizeScale(this.settings.scaleByHash[info.hash] ?? 1);
@@ -332,11 +335,15 @@ export default class TikzJaxPlugin extends Plugin {
 		) => {
 			const button = toolbar.createEl('button', { text, cls: 'tikzjax-toolbar-btn' });
 			if (isMobileRuntime) {
-				button.style.setProperty('font-size', '9px', 'important');
+				const isLargeScreen = window.screen.width >= 2000 || window.screen.height >= 2000;
+				const btnFontSize = isLargeScreen ? '12px' : '9px';
+				const btnPadding = isLargeScreen ? '4px 10px' : '2.5px 6px';
+				const btnRadius = isLargeScreen ? '8px' : '6px';
+				button.style.setProperty('font-size', btnFontSize, 'important');
 				button.style.setProperty('font-weight', '400', 'important');
 				button.style.setProperty('line-height', '1', 'important');
-				button.style.setProperty('padding', '2.5px 6px', 'important');
-				button.style.setProperty('border-radius', '6px', 'important');
+				button.style.setProperty('padding', btnPadding, 'important');
+				button.style.setProperty('border-radius', btnRadius, 'important');
 				button.style.setProperty('box-shadow', 'none', 'important');
 				button.style.setProperty('min-width', '0', 'important');
 				button.style.setProperty('min-height', '0', 'important');
