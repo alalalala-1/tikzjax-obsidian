@@ -177,7 +177,7 @@
 }
 
 /* Large-screen mobile (e.g. Boox T13C, 3200x2400) */
-@media (min-width: 2000px), (min-height: 2000px) {
+@media (min-width: 800px), (min-height: 800px) {
 	.is-mobile .tikzjax-toolbar-btn {
 		font-size: 12px !important;
 		padding: 4px 10px !important;

@@ -180,7 +180,7 @@ export default class TikzJaxPlugin extends Plugin {
 		const normalizeScale = (value: number) => Math.round(clampScale(value) * 100) / 100;
 
 		if (isMobileRuntime) {
-			const isLargeScreen = window.screen.width >= 2000 || window.screen.height >= 2000;
+			const isLargeScreen = window.screen.width >= 800 || window.screen.height >= 800;
 			const labelFontSize = isLargeScreen ? '12px' : '9px';
 			const labelPadding = isLargeScreen ? '3px 8px' : '2.5px 6px';
 			timeLabel.style.fontSize = labelFontSize;
@@ -335,7 +335,7 @@ export default class TikzJaxPlugin extends Plugin {
 		) => {
 			const button = toolbar.createEl('button', { text, cls: 'tikzjax-toolbar-btn' });
 			if (isMobileRuntime) {
-				const isLargeScreen = window.screen.width >= 2000 || window.screen.height >= 2000;
+				const isLargeScreen = window.screen.width >= 800 || window.screen.height >= 800;
 				const btnFontSize = isLargeScreen ? '12px' : '9px';
 				const btnPadding = isLargeScreen ? '4px 10px' : '2.5px 6px';
 				const btnRadius = isLargeScreen ? '8px' : '6px';
